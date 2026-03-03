@@ -4,6 +4,11 @@ import { CONFIG } from './config/constants';
 import { GetUrlsFromString } from './utils/url';
 import { getBlockContent } from './utils/roam';
 import { BlockObservers } from './types';
+import { initSettings, isPluginEnabled, setPluginEnabled, cleanupSettings } from './config/settings';
+import { showToast, cleanupToast } from './utils/toast';
+
+const COMMAND_LABEL = 'Website Title Parser: Toggle Enable/Disable';
+const YOUTUBE_COMMAND_LABEL = 'Website Title Parser: Toggle YouTube Blacklist';
 
 class RoamUrlParser {
   private queueProcessor: QueueProcessor;
@@ -27,6 +32,7 @@ class RoamUrlParser {
     const observer = new MutationObserver((mutations) => {
       mutations.forEach((mutation) => {
         if (mutation.type === 'characterData' || mutation.type === 'childList') {
+          if (!isPluginEnabled()) return;
           const content = getBlockContent(blockUid);
           const urls = GetUrlsFromString(content);
           if (urls && urls.length > 0) {
@@ -56,13 +62,14 @@ class RoamUrlParser {
 
   private async handleEnterKey(event: KeyboardEvent): Promise<void> {
     if (event.key !== 'Enter') return;
+    if (!isPluginEnabled()) return;
 
     const currentBlock = window.roamAlphaAPI.ui.getFocusedBlock();
     if (!currentBlock) return;
 
     const currentBlockUid = currentBlock['block-uid'];
     const content = getBlockContent(currentBlockUid);
-    
+
     const urls = GetUrlsFromString(content);
     if (!urls || urls.length === 0) return;
 
@@ -72,6 +79,8 @@ class RoamUrlParser {
   }
 
   private async handlePaste(event: ClipboardEvent): Promise<void> {
+    if (!isPluginEnabled()) return;
+
     const pasteContent = event.clipboardData.getData('text');
     const urls = GetUrlsFromString(pasteContent);
     if (!urls || urls.length === 0) return;
@@ -86,10 +95,10 @@ class RoamUrlParser {
     const checkContent = async () => {
       while (attempts < CONFIG.MAX_CHECK_ATTEMPTS) {
         await new Promise(resolve => setTimeout(resolve, CONFIG.CHECK_INTERVAL));
-        
+
         const currentContent = getBlockContent(blockUid);
         const urlsInBlock = urls.filter(url => currentContent.includes(url));
-        
+
         if (urlsInBlock.length > 0) {
           await this.queueProcessor.addTasks(
             urlsInBlock.map(url => ({ url, blockUid }))
@@ -126,13 +135,50 @@ class RoamUrlParser {
 let instance: RoamUrlParser | null = null;
 
 export default {
-  onload: () => {
+  onload: ({ extensionAPI }: { extensionAPI: any }) => {
+    // Initialize settings panel
+    initSettings(extensionAPI);
+
+    // Register Command Palette toggle command
+    window.roamAlphaAPI.ui.commandPalette.addCommand({
+      label: COMMAND_LABEL,
+      callback: () => {
+        const current = isPluginEnabled();
+        setPluginEnabled(!current);
+        const status = !current ? 'Enabled' : 'Disabled';
+        showToast(`Website Title Parser — ${status}`, !current);
+      }
+    });
+
+    // Register YouTube blacklist toggle command
+    window.roamAlphaAPI.ui.commandPalette.addCommand({
+      label: YOUTUBE_COMMAND_LABEL,
+      callback: () => {
+        const current = extensionAPI.settings.get('youtube-blacklist');
+        const newValue = !current;
+        extensionAPI.settings.set('youtube-blacklist', newValue);
+        const status = newValue ? 'YouTube Excluded' : 'YouTube Parsing Enabled';
+        showToast(`Website Title Parser — ${status}`, !newValue);
+      }
+    });
+
     if (!instance) {
       instance = new RoamUrlParser();
       instance.initialize();
     }
   },
   onunload: () => {
+    // Remove Command Palette command
+    window.roamAlphaAPI.ui.commandPalette.removeCommand({
+      label: COMMAND_LABEL
+    });
+    window.roamAlphaAPI.ui.commandPalette.removeCommand({
+      label: YOUTUBE_COMMAND_LABEL
+    });
+
+    cleanupSettings();
+    cleanupToast();
+
     if (instance) {
       instance.unload();
       instance = null;

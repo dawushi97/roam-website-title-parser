@@ -7,8 +7,21 @@ export const CONFIG = {
   QUEUE_RETRY_DELAY: 200,
   REQUEST_TIMEOUT: 10000,
   CURSOR_UPDATE_DELAY: 100,
-  EXCLUDED_URLS: [
-    'https://firebasestorage.googleapis.com/v0/b/firescript-577a2.appspot.com',
-    'https://roamresearch.com'
-  ]
-} as const; 
+} as const;
+
+// Always excluded — cannot be toggled off
+export const HARDCODED_BLACKLIST = [
+  'https://firebasestorage.googleapis.com/v0/b/firescript-577a2.appspot.com',
+  'https://roamresearch.com',
+  'https://www.bilibili.com',
+  'https://bilibili.com',
+];
+
+// YouTube domains — can be toggled on/off via settings
+export const YOUTUBE_DOMAINS = [
+  'https://www.youtube.com',
+  'https://youtube.com',
+  'https://youtu.be',
+  'https://m.youtube.com',
+  'https://music.youtube.com',
+];
