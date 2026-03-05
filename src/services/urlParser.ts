@@ -24,6 +24,40 @@ function isYouTubeUrl(url: string): boolean {
   return YOUTUBE_URL_PATTERNS.some(pattern => pattern.test(url));
 }
 
+const BILIBILI_BVID_PATTERN = /BV[0-9A-Za-z]{10}/i;
+
+function isBilibiliUrl(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return hostname === 'bilibili.com'
+      || hostname.endsWith('.bilibili.com')
+      || hostname === 'b23.tv';
+  } catch {
+    return false;
+  }
+}
+
+function extractBilibiliBvid(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const queryBvid = parsed.searchParams.get('bvid') || parsed.searchParams.get('BVID');
+    if (queryBvid) {
+      const queryMatch = queryBvid.match(BILIBILI_BVID_PATTERN);
+      if (queryMatch) return queryMatch[0];
+    }
+
+    const pathMatch = parsed.pathname.match(BILIBILI_BVID_PATTERN);
+    if (pathMatch) return pathMatch[0];
+
+    const urlMatch = url.match(BILIBILI_BVID_PATTERN);
+    if (urlMatch) return urlMatch[0];
+  } catch {
+    const urlMatch = url.match(BILIBILI_BVID_PATTERN);
+    if (urlMatch) return urlMatch[0];
+  }
+  return null;
+}
+
 const YOUTUBE_VIDEO_ID_PATTERNS = [
   /[?&]v=([a-zA-Z0-9_-]{11})/,
   /youtu\.be\/([a-zA-Z0-9_-]{11})/,
@@ -72,6 +106,89 @@ async function getYouTubeTitle(url: string): Promise<string | null> {
     console.error('Error fetching YouTube title via oEmbed:', error);
     return null;
   }
+}
+
+function getBilibiliTitleFromApiPayload(payload: any): string | null {
+  if (payload?.code !== 0) return null;
+  if (typeof payload?.data?.title !== 'string') return null;
+  return payload.data.title;
+}
+
+async function fetchBilibiliApiTitle(apiUrl: string): Promise<string | null> {
+  const response = await fetchWithTimeout(apiUrl);
+  if (!response.ok) return null;
+
+  const payload = await response.json();
+  return getBilibiliTitleFromApiPayload(payload);
+}
+
+async function getBilibiliTitleViaJsonp(bvid: string): Promise<string | null> {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return null;
+  }
+
+  const callbackName = `__roamBilibiliCallback_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const jsonpUrl = `https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}&jsonp=jsonp&callback=${callbackName}`;
+
+  return await new Promise((resolve) => {
+    const script = document.createElement('script');
+    let settled = false;
+    let timeoutId = 0;
+
+    const cleanup = () => {
+      delete (window as any)[callbackName];
+      script.remove();
+    };
+
+    const finish = (title: string | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      cleanup();
+      resolve(title);
+    };
+
+    (window as any)[callbackName] = (payload: any) => {
+      finish(getBilibiliTitleFromApiPayload(payload));
+    };
+
+    script.src = jsonpUrl;
+    script.async = true;
+    script.onerror = () => finish(null);
+
+    timeoutId = window.setTimeout(() => finish(null), CONFIG.REQUEST_TIMEOUT);
+    document.head.appendChild(script);
+  });
+}
+
+// Bilibili video API supports lookup by BV id.
+async function getBilibiliTitle(url: string): Promise<string | null> {
+  const bvid = extractBilibiliBvid(url);
+  if (!bvid) return null;
+
+  try {
+    const jsonpTitle = await getBilibiliTitleViaJsonp(bvid);
+    if (jsonpTitle) return cleanTitle(jsonpTitle, url);
+  } catch {
+    // Ignore JSONP failures and continue with fetch-based fallbacks.
+  }
+
+  const apiUrl = `https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`;
+  try {
+    const directTitle = await fetchBilibiliApiTitle(apiUrl);
+    if (directTitle) return cleanTitle(directTitle, url);
+  } catch {
+    // Ignore direct-fetch failures (e.g. browser CORS), then try proxy.
+  }
+
+  try {
+    const proxiedTitle = await fetchBilibiliApiTitle(`${CORS_PROXY}/${apiUrl}`);
+    if (proxiedTitle) return cleanTitle(proxiedTitle, url);
+  } catch (error) {
+    console.error('Error fetching Bilibili title via BV API:', error);
+  }
+
+  return null;
 }
 
 function cleanTitle(title: string, url: string): string {
@@ -124,12 +241,19 @@ async function getGenericWebsiteTitle(url: string): Promise<string | null> {
 }
 
 // YouTube: oEmbed via proxy (fast, clean title) → fallback generic HTML parsing
+// Bilibili: BV API lookup via JSONP (then direct fetch, then proxy) → fallback generic HTML parsing
 // Others: generic HTML parsing via proxy
 async function getWebsiteTitle(url: string): Promise<string | null> {
   if (isYouTubeUrl(url)) {
     const title = await getYouTubeTitle(url);
     if (title) return title;
   }
+
+  if (isBilibiliUrl(url)) {
+    const title = await getBilibiliTitle(url);
+    if (title) return title;
+  }
+
   return await getGenericWebsiteTitle(url);
 }
 

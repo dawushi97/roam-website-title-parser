@@ -13,8 +13,6 @@ export const CONFIG = {
 export const HARDCODED_BLACKLIST = [
   'https://firebasestorage.googleapis.com/v0/b/firescript-577a2.appspot.com',
   'https://roamresearch.com',
-  'https://www.bilibili.com',
-  'https://bilibili.com',
 ];
 
 // YouTube domains — can be toggled on/off via settings

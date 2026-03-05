@@ -34,7 +34,7 @@ export function initSettings(api: any): void {
             {
                 id: "custom-blacklist",
                 name: "Custom Blacklist Domains",
-                description: "Comma-separated domains to exclude from parsing (e.g. example.com, foo.org). Bilibili is always excluded.",
+                description: "Comma-separated domains to exclude from parsing (e.g. example.com, foo.org).",
                 action: {
                     type: "input",
                     placeholder: "example.com, foo.org",
