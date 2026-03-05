@@ -24,6 +24,8 @@ function isYouTubeUrl(url: string): boolean {
   return YOUTUBE_URL_PATTERNS.some(pattern => pattern.test(url));
 }
 
+const MARKDOWN_LINK_REGEX = /\[([^\]]+)\]\([^)]+\)/g;
+
 const BILIBILI_BVID_PATTERN = /BV[0-9A-Za-z]{10}/i;
 
 function isBilibiliUrl(url: string): boolean {
@@ -75,6 +77,22 @@ function extractYouTubeVideoId(url: string): string | null {
 }
 
 const CORS_PROXY = 'https://us-central1-firescript-577a2.cloudfunctions.net/proxy-corsAnywhere';
+const TITLE_CACHE_MAX_ENTRIES = 500;
+const RESOLVED_TITLE_CACHE = new Map<string, string>();
+const IN_FLIGHT_TITLE_REQUESTS = new Map<string, Promise<string | null>>();
+
+function cacheResolvedTitle(url: string, title: string): void {
+  if (RESOLVED_TITLE_CACHE.has(url)) {
+    RESOLVED_TITLE_CACHE.delete(url);
+  }
+
+  RESOLVED_TITLE_CACHE.set(url, title);
+
+  if (RESOLVED_TITLE_CACHE.size > TITLE_CACHE_MAX_ENTRIES) {
+    const oldestKey = RESOLVED_TITLE_CACHE.keys().next().value;
+    if (oldestKey) RESOLVED_TITLE_CACHE.delete(oldestKey);
+  }
+}
 
 // Fetch with AbortController timeout to prevent hanging requests
 async function fetchWithTimeout(
@@ -157,7 +175,8 @@ async function getBilibiliTitleViaJsonp(bvid: string): Promise<string | null> {
     script.onerror = () => finish(null);
 
     timeoutId = window.setTimeout(() => finish(null), CONFIG.REQUEST_TIMEOUT);
-    document.head.appendChild(script);
+    const mountNode = document.head || document.body || document.documentElement;
+    mountNode.appendChild(script);
   });
 }
 
@@ -243,7 +262,7 @@ async function getGenericWebsiteTitle(url: string): Promise<string | null> {
 // YouTube: oEmbed via proxy (fast, clean title) → fallback generic HTML parsing
 // Bilibili: BV API lookup via JSONP (then direct fetch, then proxy) → fallback generic HTML parsing
 // Others: generic HTML parsing via proxy
-async function getWebsiteTitle(url: string): Promise<string | null> {
+async function resolveWebsiteTitle(url: string): Promise<string | null> {
   if (isYouTubeUrl(url)) {
     const title = await getYouTubeTitle(url);
     if (title) return title;
@@ -255,6 +274,31 @@ async function getWebsiteTitle(url: string): Promise<string | null> {
   }
 
   return await getGenericWebsiteTitle(url);
+}
+
+async function getWebsiteTitle(url: string): Promise<string | null> {
+  if (RESOLVED_TITLE_CACHE.has(url)) {
+    return RESOLVED_TITLE_CACHE.get(url) || null;
+  }
+
+  const inFlightRequest = IN_FLIGHT_TITLE_REQUESTS.get(url);
+  if (inFlightRequest) {
+    return inFlightRequest;
+  }
+
+  const request = resolveWebsiteTitle(url)
+    .then((title) => {
+      if (title) {
+        cacheResolvedTitle(url, title);
+      }
+      return title;
+    })
+    .finally(() => {
+      IN_FLIGHT_TITLE_REQUESTS.delete(url);
+    });
+
+  IN_FLIGHT_TITLE_REQUESTS.set(url, request);
+  return request;
 }
 
 export async function parseWebsiteUrlTitle(
@@ -277,8 +321,7 @@ export async function parseWebsiteUrlTitle(
 
   const currentContent = getBlockContent(blockUid);
 
-  const markdownLinkRegex = /\[([^\]]+)\]\([^)]+\)/g;
-  const contentWithoutMarkdown = currentContent.replace(markdownLinkRegex, '');
+  const contentWithoutMarkdown = currentContent.replace(MARKDOWN_LINK_REGEX, '');
 
   if (!contentWithoutMarkdown.includes(url)) {
     processedUrls.add(taskKey);
