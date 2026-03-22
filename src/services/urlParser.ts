@@ -24,7 +24,7 @@ function isYouTubeUrl(url: string): boolean {
   return YOUTUBE_URL_PATTERNS.some(pattern => pattern.test(url));
 }
 
-const MARKDOWN_LINK_REGEX = /\[([^\]]+)\]\([^)]+\)/g;
+const MARKDOWN_LINK_REGEX = /\[(?:\\.|[^\]\\])*\]\((?:\\.|[^\\)])*\)/g;
 
 const BILIBILI_BVID_PATTERN = /BV[0-9A-Za-z]{10}/i;
 
@@ -224,6 +224,48 @@ function cleanTitle(title: string, url: string): string {
   return cleaned.replace(/\s+/g, ' ').trim();
 }
 
+function stripMarkdownLinks(text: string): string {
+  return text.replace(MARKDOWN_LINK_REGEX, '');
+}
+
+function normalizeLeadingBracketLabels(text: string): string {
+  let remaining = text.trim();
+  const labels: string[] = [];
+
+  while (remaining.startsWith('[')) {
+    const match = remaining.match(/^\[([^[\]]+)\]\s*/);
+    if (!match) break;
+
+    const label = match[1].trim();
+    const looksLikeLabel = /[A-Za-z]/.test(label) && label.length <= 40;
+    if (!looksLikeLabel) break;
+
+    labels.push(label);
+    remaining = remaining.slice(match[0].length).trimStart();
+  }
+
+  if (labels.length === 0) return text;
+  if (!remaining) return labels.join(' / ');
+
+  return `${labels.join(' / ')}: ${remaining}`;
+}
+
+function sanitizeRoamMarkdownLinkText(text: string): string {
+  const normalized = normalizeLeadingBracketLabels(text);
+
+  return normalized
+    // Roam's Markdown parser does not reliably honor escaped square brackets
+    // inside link text, so use a visible fallback only where brackets remain.
+    .replace(/\[/g, '［')
+    .replace(/\]/g, '］');
+}
+
+export const __test__ = {
+  normalizeLeadingBracketLabels,
+  sanitizeRoamMarkdownLinkText,
+  stripMarkdownLinks,
+};
+
 // Fetch title from HTML via CORS proxy, trying og:title, twitter:title, <title>, <h1>
 async function getGenericWebsiteTitle(url: string): Promise<string | null> {
   try {
@@ -321,7 +363,7 @@ export async function parseWebsiteUrlTitle(
 
   const currentContent = getBlockContent(blockUid);
 
-  const contentWithoutMarkdown = currentContent.replace(MARKDOWN_LINK_REGEX, '');
+  const contentWithoutMarkdown = stripMarkdownLinks(currentContent);
 
   if (!contentWithoutMarkdown.includes(url)) {
     processedUrls.add(taskKey);
@@ -360,7 +402,7 @@ async function updateBlockUrlFormat(url: string, title: string, blockUid: string
   const originalContent = getBlockContent(blockUid);
   if (!originalContent) return;
 
-  const urlWithMarkdownFormat = `[${title}](${url})`;
+  const urlWithMarkdownFormat = `[${sanitizeRoamMarkdownLinkText(title)}](${url})`;
 
   const escapedUrl = url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const urlRegex = new RegExp(`(?<!\\()${escapedUrl}(?!\\))`, 'g');
