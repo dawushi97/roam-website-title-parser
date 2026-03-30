@@ -76,6 +76,15 @@ function extractYouTubeVideoId(url: string): string | null {
   return null;
 }
 
+function isRedditUrl(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return hostname === 'reddit.com' || hostname.endsWith('.reddit.com');
+  } catch {
+    return false;
+  }
+}
+
 const CORS_PROXY = 'https://us-central1-firescript-577a2.cloudfunctions.net/proxy-corsAnywhere';
 const TITLE_CACHE_MAX_ENTRIES = 500;
 const RESOLVED_TITLE_CACHE = new Map<string, string>();
@@ -210,6 +219,24 @@ async function getBilibiliTitle(url: string): Promise<string | null> {
   return null;
 }
 
+// Reddit blocks generic HTML scraping, but its official oEmbed endpoint
+// returns the post or comment title in a small JSON payload.
+async function getRedditTitle(url: string): Promise<string | null> {
+  try {
+    const oembedUrl = `https://www.reddit.com/oembed?url=${encodeURIComponent(url)}`;
+    const response = await fetchWithTimeout(`${CORS_PROXY}/${oembedUrl}`);
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    if (typeof data?.title !== 'string') return null;
+
+    return cleanTitle(data.title, url);
+  } catch (error) {
+    console.error('Error fetching Reddit title via oEmbed:', error);
+    return null;
+  }
+}
+
 function cleanTitle(title: string, url: string): string {
   if (!title) return title;
 
@@ -261,6 +288,8 @@ function sanitizeRoamMarkdownLinkText(text: string): string {
 }
 
 export const __test__ = {
+  isRedditUrl,
+  resolveWebsiteTitle,
   normalizeLeadingBracketLabels,
   sanitizeRoamMarkdownLinkText,
   stripMarkdownLinks,
@@ -303,6 +332,7 @@ async function getGenericWebsiteTitle(url: string): Promise<string | null> {
 
 // YouTube: oEmbed via proxy (fast, clean title) → fallback generic HTML parsing
 // Bilibili: BV API lookup via JSONP (then direct fetch, then proxy) → fallback generic HTML parsing
+// Reddit: oEmbed via proxy → fallback generic HTML parsing
 // Others: generic HTML parsing via proxy
 async function resolveWebsiteTitle(url: string): Promise<string | null> {
   if (isYouTubeUrl(url)) {
@@ -312,6 +342,11 @@ async function resolveWebsiteTitle(url: string): Promise<string | null> {
 
   if (isBilibiliUrl(url)) {
     const title = await getBilibiliTitle(url);
+    if (title) return title;
+  }
+
+  if (isRedditUrl(url)) {
+    const title = await getRedditTitle(url);
     if (title) return title;
   }
 
